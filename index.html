@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>剪辑小工具</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;700&display=swap" rel="stylesheet" />
+<style>
+  :root { --bg:#0e1014; --panel:#171a21; --line:#2a3040; --text:#e8eadf; --muted:#8b93a7; --accent:#e8ff4d; --danger:#ff6b6b; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--text); font-family:"Noto Sans SC","PingFang SC",sans-serif; }
+  .wrap { max-width:880px; margin:0 auto; padding:28px 20px 64px; }
+  h1 { font-size:22px; margin:0 0 6px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:22px; }
+  .grid { display:grid; gap:14px; }
+  .title { display:block; font-size:12px; color:var(--muted); margin-bottom:8px; letter-spacing:.08em; }
+  textarea, select { width:100%; background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:10px; padding:12px 14px; font-size:14px; }
+  textarea { min-height:170px; resize:vertical; line-height:1.65; }
+  .drop { border:1px dashed #3a4256; border-radius:12px; background:var(--panel); padding:22px; text-align:center; color:var(--muted); cursor:pointer; }
+  .drop.drag { border-color:var(--accent); color:var(--accent); }
+  .files { margin-top:8px; font-size:12px; }
+  .row { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+  @media (max-width:700px){ .row{ grid-template-columns:1fr; } }
+  button.go { width:100%; border:0; border-radius:12px; padding:14px; background:var(--accent); color:#111; font-weight:700; font-size:16px; cursor:pointer; }
+  button.go:disabled { opacity:.5; cursor:not-allowed; }
+  .status { min-height:24px; font-size:13px; color:var(--muted); }
+  .bar { height:6px; background:#222733; border-radius:99px; overflow:hidden; margin:8px 0 16px; }
+  .bar > i { display:block; height:100%; width:0; background:var(--accent); }
+  video { width:100%; max-height:520px; background:#000; border-radius:12px; margin-top:10px; }
+  .err { color:var(--danger); }
+  a.dl { color:var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>剪辑小工具</h1>
+  <div class="sub">文案和素材丢进来，在你自己的浏览器里直接成片。不依赖后台隧道。</div>
+  <div class="grid">
+    <div>
+      <label class="title">文案</label>
+      <textarea id="script" placeholder="空行分段，或写成：
+1. 开场钩子
+2. 讲清楚一件事
+3. 结尾行动点"></textarea>
+    </div>
+    <div>
+      <label class="title">素材 · 视频 / 图片 / 配乐</label>
+      <div class="drop" id="drop">点这里选文件，或直接拖进来<br><span style="font-size:12px">没有素材也能出片：纯色底 + 字幕</span></div>
+      <input id="files" type="file" multiple accept="video/*,image/*,audio/*" hidden />
+      <div class="files" id="filelist">还没放素材</div>
+    </div>
+    <div class="row">
+      <div>
+        <label class="title">画幅</label>
+        <select id="aspect">
+          <option value="9:16">竖屏 9:16</option>
+          <option value="16:9">横屏 16:9</option>
+          <option value="1:1">方屏 1:1</option>
+        </select>
+      </div>
+      <div>
+        <label class="title">配音</label>
+        <select id="voice">
+          <option value="none">不配音（最稳）</option>
+          <option value="zh-CN-XiaoxiaoNeural">晓晓 · 需后台</option>
+          <option value="zh-CN-YunxiNeural">云希 · 需后台</option>
+        </select>
+      </div>
+      <div>
+        <label class="title">转场</label>
+        <select id="transition">
+          <option value="cut">硬切</option>
+          <option value="fade">淡入淡出</option>
+        </select>
+      </div>
+    </div>
+    <label style="font-size:13px;color:var(--muted)"><input type="checkbox" id="subs" checked /> 烧字幕</label>
+    <button class="go" id="go">一键成片</button>
+    <div class="status" id="status">就绪。建议用 Chrome。</div>
+    <div class="bar"><i id="bar"></i></div>
+    <div id="result"></div>
+  </div>
+</div>
+<script>
+const drop = document.getElementById("drop");
+const input = document.getElementById("files");
+const list = document.getElementById("filelist");
+const go = document.getElementById("go");
+const statusEl = document.getElementById("status");
+const bar = document.getElementById("bar");
+const ASPECT = { "9:16":[1080,1920], "16:9":[1920,1080], "1:1":[1080,1080] };
+drop.onclick = () => input.click();
+["dragenter","dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("drag"); }));
+["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("drag"); }));
+drop.addEventListener("drop", e => { input.files = e.dataTransfer.files; showFiles(); });
+input.onchange = showFiles;
+function showFiles() {
+  const names = [...input.files].map(f => f.name);
+  list.textContent = names.length ? names.join("  ·  ") : "还没放素材";
+}
+function setProgress(p, msg, err) {
+  bar.style.width = Math.max(0, Math.min(100, p)) + "%";
+  statusEl.textContent = msg || "";
+  statusEl.className = "status" + (err ? " err" : "");
+}
+function parseScript(text) {
+  const raw = (text || "").replace(/\r\n/g, "\n").trim();
+  if (!raw) throw new Error("先贴文案");
+  let parts = raw.split(/\n\s*\n+/).map(s => s.trim()).filter(Boolean);
+  if (parts.length === 1) {
+    const lined = raw.split("\n").map(s => s.trim()).filter(Boolean);
+    const numbered = lined.filter(ln => /^(\d+[\.\u3001\)]|场景\s*\d+|第\s*\d+\s*场)/.test(ln));
+    if (numbered.length >= 2) parts = numbered.map(ln => ln.replace(/^(\d+[\.\u3001\)]|场景\s*\d+|第\s*\d+\s*场)[:：\s]*/, "").trim() || ln);
+    else if (lined.length >= 3) parts = lined;
+    else {
+      const sentences = raw.split(/(?<=[。！？!?；;])\s*/).map(s => s.trim()).filter(Boolean);
+      parts = sentences.length >= 2 ? sentences : [raw];
+    }
+  }
+  return parts.slice(0, 24);
+}
+function wrapText(text, width) {
+  const t = String(text).replace(/\s+/g, " ").trim();
+  const lines = [];
+  let buf = "";
+  for (const ch of t) {
+    buf += ch;
+    if (buf.length >= width) { lines.push(buf); buf = ""; }
+  }
+  if (buf) lines.push(buf);
+  return lines.slice(0, 5);
+}
+function guessDur(text) {
+  const n = String(text).replace(/\s+/g, "").length;
+  return Math.min(12, Math.max(2.2, n / 4.2 + 0.6));
+}
+function isVideo(f){ return f.type.startsWith("video/") || /\.(mp4|mov|webm|mkv|m4v)$/i.test(f.name); }
+function isImage(f){ return f.type.startsWith("image/") || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(f.name); }
+function isAudio(f){ return f.type.startsWith("audio/") || /\.(mp3|wav|m4a|aac|flac|ogg)$/i.test(f.name); }
+function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("图片读不了：" + file.name));
+    img.src = URL.createObjectURL(file);
+  });
+}
+function loadVideo(file) {
+  return new Promise((resolve, reject) => {
+    const v = document.createElement("video");
+    v.muted = true; v.playsInline = true; v.preload = "auto";
+    v.onloadedmetadata = () => resolve(v);
+    v.onerror = () => reject(new Error("视频读不了：" + file.name));
+    v.src = URL.createObjectURL(file);
+  });
+}
+function audioDuration(url) {
+  return new Promise(resolve => {
+    const a = new Audio();
+    a.preload = "metadata";
+    a.onloadedmetadata = () => resolve(Math.max(1.6, a.duration || 3));
+    a.onerror = () => resolve(3);
+    a.src = url;
+  });
+}
+async function tryTts() { return null; }
+function pickMime() {
+  const types = ["video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm","video/mp4"];
+  for (const t of types) if (window.MediaRecorder && MediaRecorder.isTypeSupported(t)) return t;
+  return "video/webm";
+}
+function coverDraw(ctx, src, w, h) {
+  const sw = src.videoWidth || src.naturalWidth || w;
+  const sh = src.videoHeight || src.naturalHeight || h;
+  const scale = Math.max(w / sw, h / sh);
+  ctx.drawImage(src, (w - sw * scale) / 2, (h - sh * scale) / 2, sw * scale, sh * scale);
+}
+function drawSub(ctx, text, w, h) {
+  const lines = wrapText(text, h >= w ? 12 : 18);
+  const size = h >= w ? 52 : 44;
+  ctx.font = `700 ${size}px "Noto Sans SC","PingFang SC",sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  const lineH = size + 10;
+  const base = h - Math.floor(h * 0.1);
+  lines.forEach((ln, i) => {
+    const y = base - (lines.length - 1 - i) * lineH;
+    ctx.lineWidth = 8;
+    ctx.strokeStyle = "rgba(0,0,0,.75)";
+    ctx.strokeText(ln, w / 2, y);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(ln, w / 2, y);
+  });
+}
+go.onclick = async () => {
+  let scenes;
+  try { scenes = parseScript(document.getElementById("script").value); }
+  catch (e) { setProgress(0, e.message, true); return; }
+  const files = [...input.files];
+  const visuals = files.filter(f => isVideo(f) || isImage(f));
+  const audios = files.filter(isAudio);
+  const bgmFile = audios.find(f => /bgm|music|配乐|音乐/i.test(f.name)) || null;
+  const extraAudio = audios.filter(f => f !== bgmFile);
+  const [w, h] = ASPECT[document.getElementById("aspect").value];
+  const fade = document.getElementById("transition").value === "fade";
+  const subs = document.getElementById("subs").checked;
+  go.disabled = true;
+  document.getElementById("result").innerHTML = "";
+  setProgress(4, "浏览器本地出片");
+  try {
+    try { await document.fonts.load('700 52px "Noto Sans SC"'); } catch (_) {}
+    const packed = [];
+    for (let i = 0; i < scenes.length; i++) {
+      const text = scenes[i];
+      const file = visuals.length ? visuals[i % visuals.length] : null;
+      let visual = null, kind = "color";
+      if (file && isImage(file)) { visual = await loadImage(file); kind = "image"; }
+      else if (file && isVideo(file)) { visual = await loadVideo(file); kind = "video"; }
+      let audioUrl = null, dur = guessDur(text);
+      if (extraAudio[i]) {
+        audioUrl = URL.createObjectURL(extraAudio[i]);
+        dur = await audioDuration(audioUrl);
+      } else if (kind === "video") {
+        dur = Math.max(2, (visual.duration || 3) / Math.max(1, Math.ceil(scenes.length / Math.max(1, visuals.length))));
+      }
+      packed.push({ text, visual, kind, audioUrl, dur });
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    const audioCtx = new AudioContext();
+    if (audioCtx.state === "suspended") await audioCtx.resume();
+    const dest = audioCtx.createMediaStreamDestination();
+    const mix = audioCtx.createGain();
+    mix.connect(dest);
+    if (bgmFile) {
+      const bgm = new Audio(URL.createObjectURL(bgmFile));
+      bgm.loop = true;
+      const src = audioCtx.createMediaElementSource(bgm);
+      const g = audioCtx.createGain();
+      g.gain.value = 0.12;
+      src.connect(g).connect(mix);
+      bgm.play().catch(() => {});
+    }
+    const mime = pickMime();
+    const stream = canvas.captureStream(30);
+    dest.stream.getAudioTracks().forEach(t => stream.addTrack(t));
+    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 5_000_000 });
+    const chunks = [];
+    rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    const stopped = new Promise(resolve => { rec.onstop = resolve; });
+    rec.start(200);
+    for (let i = 0; i < packed.length; i++) {
+      const sc = packed[i];
+      setProgress(40 + Math.floor((i / packed.length) * 55), `渲染 ${i + 1}/${packed.length}`);
+      let mediaEl = null;
+      if (sc.audioUrl) {
+        mediaEl = new Audio(sc.audioUrl);
+        audioCtx.createMediaElementSource(mediaEl).connect(mix);
+        await new Promise(resolve => {
+          mediaEl.oncanplaythrough = resolve;
+          mediaEl.onerror = resolve;
+          setTimeout(resolve, 1200);
+        });
+        await mediaEl.play().catch(() => {});
+      }
+      if (sc.kind === "video" && sc.visual) {
+        sc.visual.currentTime = 0;
+        sc.visual.muted = true;
+        await sc.visual.play().catch(() => {});
+      }
+      const start = performance.now();
+      await new Promise(resolve => {
+        function frame() {
+          const t = (performance.now() - start) / 1000;
+          let alpha = 1;
+          if (fade) {
+            if (t < 0.25) alpha = t / 0.25;
+            if (t > sc.dur - 0.25) alpha = Math.max(0, (sc.dur - t) / 0.25);
+          }
+          ctx.fillStyle = "#111318";
+          ctx.fillRect(0, 0, w, h);
+          ctx.globalAlpha = alpha;
+          if (sc.visual) coverDraw(ctx, sc.visual, w, h);
+          ctx.globalAlpha = 1;
+          if (subs) drawSub(ctx, sc.text, w, h);
+          if (t >= sc.dur) resolve();
+          else requestAnimationFrame(frame);
+        }
+        requestAnimationFrame(frame);
+      });
+      if (mediaEl) { mediaEl.pause(); mediaEl.src = ""; }
+      if (sc.kind === "video" && sc.visual) sc.visual.pause();
+    }
+    rec.stop();
+    await stopped;
+    if (audioCtx.state !== "closed") await audioCtx.close().catch(() => {});
+    const blob = new Blob(chunks, { type: mime.includes("mp4") ? "video/mp4" : "video/webm" });
+    if (blob.size < 800) throw new Error("成片是空的。请换 Chrome");
+    const url = URL.createObjectURL(blob);
+    const ext = blob.type.includes("mp4") ? "mp4" : "webm";
+    setProgress(100, "完成，可下载");
+    document.getElementById("result").innerHTML =
+      `<video controls src="${url}"></video><p><a class="dl" href="${url}" download="成片.${ext}">下载成片</a></p>`;
+  } catch (e) {
+    setProgress(0, e.message || "失败", true);
+  } finally {
+    go.disabled = false;
+  }
+};
+</script>
+</body>
+</html>
